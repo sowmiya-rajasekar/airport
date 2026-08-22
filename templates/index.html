@@ -1,0 +1,69 @@
+# app.py
+import os
+from flask import Flask, render_template, request, jsonify
+from dotenv import load_dotenv
+from google import genai
+from google.genai import types
+from chatbot_config import SYSTEM_PROMPT
+
+# Load environment variables from .env
+load_dotenv()
+
+API_KEY = os.getenv("GEMINI_API_KEY")
+if not API_KEY:
+    raise ValueError("GEMINI_API_KEY not found. Please set it in your .env file.")
+
+client = genai.Client(api_key=API_KEY)
+MODEL_NAME = "gemini-3.6-flash"
+
+app = Flask(__name__)
+
+# Keep a simple in-memory chat history per server run (single-user demo).
+# For multi-user production, store history per session/user instead.
+chat_history = []
+
+
+@app.route("/")
+def home():
+    return render_template("index.html")
+
+
+@app.route("/chat", methods=["POST"])
+def chat():
+    data = request.get_json(silent=True) or {}
+    user_message = data.get("message", "").strip()
+
+    if not user_message:
+        return jsonify({"reply": "Please type a message."}), 400
+
+    try:
+        # Build contents: system prompt + past turns + new user message
+        response = client.models.generate_content(
+            model=MODEL_NAME,
+            contents=chat_history + [
+                types.Content(role="user", parts=[types.Part(text=user_message)])
+            ],
+            config=types.GenerateContentConfig(
+                system_instruction=SYSTEM_PROMPT,
+                temperature=0.6,
+                max_output_tokens=512,
+            ),
+        )
+
+        reply_text = response.text.strip() if response.text else \
+            "Sorry, I couldn't process that. Please try again."
+
+        # Update history (keep last 10 turns to limit token usage)
+        chat_history.append(types.Content(role="user", parts=[types.Part(text=user_message)]))
+        chat_history.append(types.Content(role="model", parts=[types.Part(text=reply_text)]))
+        del chat_history[:-20]  # keep last ~10 exchanges
+
+        return jsonify({"reply": reply_text})
+
+    except Exception as e:
+        print(f"Error: {e}")
+        return jsonify({"reply": "Something went wrong on the server. Please try again later."}), 500
+
+
+if __name__ == "__main__":
+    app.run(debug=True)
